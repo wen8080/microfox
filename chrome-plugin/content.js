@@ -1,76 +1,53 @@
-// RAGFlow 配置
-const RAGFLOW_CONFIG = {
-  api: "http://localhost:12345/v1/chat/completions",
-  key: "your_ragflow_api_key"
-};
+// ====================== 配置 ======================
+const RAGFLOW_API = "http://localhost:12345/v1/chat/completions";
+const RAGFLOW_KEY = "your_ragflow_api_key";
 
-// 全局状态
-let currentMode = null;
-let maskDom = null;
+// ====================== 全局状态 ======================
+let currentMode = null; // ai-highlight / smart-guide / auto-guide
+let mask = null;
+let autoGuideTimer = null;
+let isPaused = false;
 
-// 初始化
+// ====================== 初始化 UI ======================
 window.onload = () => {
   createRobot();
   createPanel();
-  bindPageClick();
-  console.log("✅ microfox 大屏助手已启动");
+  bindClick();
+  console.log("✅ microfox 大屏助手已加载");
 };
 
-// 创建悬浮机器人
-function createRobot() {
-  const robot = document.createElement("div");
-  robot.className = "ai-robot";
-  robot.innerText = "🤖";
-  robot.onclick = togglePanel;
-  document.body.appendChild(robot);
+// ====================== 1. 精确区域截图（html2canvas） ======================
+async function captureArea(dom) {
+  const canvas = await html2canvas(dom, { useCORS: true, scale: 1.5 });
+  return canvas.toDataURL("image/png");
 }
 
-// 创建控制面板
-function createPanel() {
-  const panel = document.createElement("div");
-  panel.className = "ai-panel";
-  panel.id = "ai-panel";
-  panel.innerHTML = `
-    <button onclick="switchMode('ai-highlight')">🤖 AI助手(高亮)</button>
-    <button onclick="switchMode('smart-guide')">🧠 智能助手(讲解)</button>
-    <button onclick="switchMode('auto-guide')">🔄 自动讲解</button>
-    <button onclick="stopAll()">⏹️ 停止</button>
-    <div style="margin-top:8px">
-      <input id="userQuestion" placeholder="输入问题" style="width:180px">
-      <button onclick="sendQuestion()">提问</button>
-    </div>
-  `;
-  document.body.appendChild(panel);
+// ====================== 2. 全屏截图（后台API） ======================
+async function captureFullScreen() {
+  return new Promise(resolve => {
+    chrome.runtime.sendMessage({ type: "capture-visible" }, res => {
+      resolve(res.base64);
+    });
+  });
 }
 
-// 显示/隐藏面板
-function togglePanel() {
-  const panel = document.getElementById("ai-panel");
-  panel.style.display = panel.style.display === "none" ? "block" : "none";
-}
-
-// 高亮区域
+// ====================== 3. 蒙版高亮 ======================
 function highlight(rect) {
   removeMask();
-  const mask = document.createElement("div");
+  mask = document.createElement("div");
   mask.className = "ai-mask";
   const hole = document.createElement("div");
   hole.className = "highlight-hole";
-  hole.style.left = rect.x + "px";
-  hole.style.top = rect.y + "px";
-  hole.style.width = rect.width + "px";
-  hole.style.height = rect.height + "px";
+  Object.assign(hole.style, rect);
   mask.appendChild(hole);
   document.body.appendChild(mask);
-  maskDom = mask;
 }
 
-// 清除蒙版
 function removeMask() {
-  if (maskDom) maskDom.remove();
+  mask?.remove();
 }
 
-// 语音播报
+// ====================== 4. 语音播报 ======================
 function speak(text) {
   window.speechSynthesis.cancel();
   const u = new SpeechSynthesisUtterance(text);
@@ -78,37 +55,115 @@ function speak(text) {
   window.speechSynthesis.speak(u);
 }
 
-// 绑定页面点击
-function bindPageClick() {
-  document.addEventListener("click", (e) => {
-    if (!currentMode) return;
-    const rect = e.target.getBoundingClientRect();
-    if (currentMode === "ai-highlight") highlight(rect);
+// ====================== 5. 调用 RAGFlow AI ======================
+async function callAI(fullImg, areaImg, question = "") {
+  const res = await fetch(RAGFLOW_API, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${RAGFLOW_KEY}`
+    },
+    body: JSON.stringify({
+      fullImage: fullImg,
+      areaImage: areaImg,
+      question: question,
+      mode: currentMode
+    })
   });
+  return await res.json();
 }
 
-// 模式切换
+// ====================== 6. 自动讲解漫游逻辑（核心） ======================
+async function startAutoGuide() {
+  if (currentMode !== "auto-guide") return;
+  isPaused = false;
+
+  // 大屏分块（自动识别4个核心区域）
+  const blocks = [
+    { x: 50, y: 50, width: 400, height: 300, name: "左上总览" },
+    { x: 500, y: 50, width: 400, height: 300, name: "右上趋势" },
+    { x: 50, y: 360, width: 400, height: 300, name: "左下分布" },
+    { x: 500, y: 360, width: 400, height: 300, name: "右下统计" }
+  ];
+
+  for (let block of blocks) {
+    if (isPaused || currentMode !== "auto-guide") break;
+
+    // 高亮区域
+    highlight(block);
+    // 截图
+    const full = await captureFullScreen();
+    const mockDom = { getBoundingClientRect: () => block };
+    const area = await captureArea(mockDom);
+    // AI讲解
+    const ai = await callAI(full, area);
+    speak(ai.content);
+    // 停留3秒
+    await new Promise(r => setTimeout(r, 3000));
+  }
+
+  speak("讲解完成");
+  removeMask();
+}
+
+// ====================== 模式切换 ======================
 window.switchMode = (mode) => {
   stopAll();
   currentMode = mode;
-  const msg = {
-    "ai-highlight": "已开启：AI高亮辅助",
-    "smart-guide": "已开启：智能讲解+问答",
-    "auto-guide": "已开启：全屏自动讲解"
-  };
-  alert(msg[mode]);
+  if (mode === "auto-guide") startAutoGuide();
+  alert({
+    "ai-highlight": "✅ AI助手（高亮）",
+    "smart-guide": "✅ 智能助手（讲解+问答）",
+    "auto-guide": "✅ 自动讲解（漫游）"
+  }[mode]);
 };
 
-// 停止所有
+// ====================== 停止/暂停 ======================
 window.stopAll = () => {
   currentMode = null;
+  isPaused = true;
+  clearTimeout(autoGuideTimer);
   removeMask();
   window.speechSynthesis.cancel();
 };
 
-// 提问AI
-window.sendQuestion = async () => {
-  const q = document.getElementById("userQuestion").value;
+// ====================== 用户提问 ======================
+window.askAI = async () => {
+  const q = document.getElementById("q").value;
   if (!q) return alert("请输入问题");
-  alert("AI对接中：" + q);
+  const full = await captureFullScreen();
+  const ai = await callAI(full, null, q);
+  speak(ai.content);
+  alert(ai.content);
 };
+
+// ====================== 基础UI/事件 ======================
+function createRobot() {
+  const r = document.createElement("div");
+  r.className = "ai-robot";
+  r.innerText = "🤖";
+  r.onclick = () => document.getElementById("panel").style.display = "block";
+  document.body.appendChild(r);
+}
+
+function createPanel() {
+  const p = document.createElement("div");
+  p.id = "panel";
+  p.className = "ai-panel";
+  p.innerHTML = `
+    <button onclick="switchMode('ai-highlight')">🤖 AI助手</button>
+    <button onclick="switchMode('smart-guide')">🧠 智能助手</button>
+    <button onclick="switchMode('auto-guide')">🔄 自动讲解</button>
+    <button onclick="stopAll()">⏹️ 停止</button>
+    <div><input id="q" placeholder="提问AI"><button onclick="askAI()">发送</button></div>
+  `;
+  document.body.appendChild(p);
+}
+
+function bindClick() {
+  document.addEventListener("click", (e) => {
+    if (currentMode === "ai-highlight") {
+      highlight(e.target.getBoundingClientRect());
+    }
+  });
+}

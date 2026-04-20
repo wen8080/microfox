@@ -1,15 +1,18 @@
 {
   "manifest_version": 3,
-  "name": "大屏AI智能助手",
+  "name": "microfox 大屏AI助手",
   "version": "1.0.0",
-  "description": "基于microfox的可视化大屏讲解助手",
-  "permissions": ["activeTab", "scripting"],
+  "description": "可视化大屏高亮、智能讲解、自动漫游",
+  "permissions": ["activeTab", "scripting", "tabs"],
   "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
       "css": ["style.css"],
-      "js": ["content.js"]
+      "js": ["lib/html2canvas.min.js", "content.js"]
     }
   ],
   "action": {
